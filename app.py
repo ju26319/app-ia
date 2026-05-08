@@ -142,7 +142,17 @@ def ocr_claude(client, plate_img):
             return plate, conf, model_name
         except anthropic.NotFoundError:
             continue
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
+            # intenta extraer JSON aunque Claude agregue texto extra
+            try:
+                match = __import__('re').search(r'\{[^}]+\}', raw)
+                if match:
+                    data2 = json.loads(match.group())
+                    plate2 = data2.get("plate", "ERROR")
+                    conf2 = float(data2.get("confidence", 0.0))
+                    return plate2, conf2, model_name
+            except Exception:
+                pass
             return "ERROR_JSON", 0.0, model_name
         except Exception as e:
             return "ERROR", 0.0, str(e)
