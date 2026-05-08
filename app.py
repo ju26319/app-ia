@@ -104,15 +104,18 @@ def ocr_claude(client, plate_img):
     plate_img = upscale(plate_img)
     b64 = pil_to_b64(plate_img)
     prompt = (
-        "You are a Colombian license plate reader. "
-        "Look at this license plate image carefully. "
-        "Colombian plates have exactly 3 letters followed by 3 digits (example: NTR136 or CYW640). "
-        "Ignore any city name, department, or extra text printed on the plate. "
-        "Extract ONLY the 6 main characters: 3 uppercase letters + 3 digits. "
-        "Return ONLY a JSON object with no markdown and no extra text: "
-        "{\"plate\":\"NTR136\",\"confidence\":0.97} "
-        "confidence is a number from 0 to 1. "
-        "If the plate is unreadable return: {\"plate\":\"ILEGIBLE\",\"confidence\":0.2}"
+        "You are an expert license plate reader for Colombian vehicles. "
+        "Examine this license plate image carefully. "
+        "Colombian plates have 3 uppercase letters and 3 digits. "
+        "The characters may appear separated by a space or dash on the physical plate. "
+        "Examples of valid plates: ENW533 (shown as ENW 533), NTR136, CYW640, BIK957. "
+        "Instructions: read all characters in the main plate area, "
+        "remove any spaces or dashes between characters, "
+        "ignore city name printed below (CALI, BOGOTA, ENVIGADO, etc). "
+        "Return ONLY a JSON object, no markdown, no extra text: "
+        "{\"plate\":\"ENW533\",\"confidence\":0.97} "
+        "confidence is 0.0 to 1.0. "
+        "Only return ILEGIBLE if you truly cannot read any characters."
     )
     for model_name in MODELS:
         try:
