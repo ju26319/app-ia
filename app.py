@@ -12,6 +12,7 @@ import time
 import json
 import re
 from collections import Counter
+from datetime import datetime
 
 st.set_page_config(
     page_title="Detector de Placas - Talento Tech 2026",
@@ -44,6 +45,8 @@ st.markdown("".join(css_parts), unsafe_allow_html=True)
 
 if "history" not in st.session_state:
     st.session_state.history = []
+if "recibo_counter" not in st.session_state:
+    st.session_state.recibo_counter = 1
 
 MODELS = [
     "claude-sonnet-4-5-20250929",
@@ -135,9 +138,7 @@ def fix_plate(plate):
 
 def parse_response(text):
     text = text.strip()
-    # Buscar JSON en la respuesta
     text = re.sub(r"```[a-z]*", "", text).strip().strip("`")
-    # Intentar parsear directo
     try:
         data = json.loads(text)
         plate = fix_plate(data.get("plate", "ERROR"))
@@ -145,20 +146,14 @@ def parse_response(text):
         return plate, conf
     except json.JSONDecodeError:
         pass
-    # Buscar patron JSON con regex
-    match = re.search(r'\{"plate"\s*:\s*"([A-Z0-9]{6})"\s*,\s*"confidence"\s*:\s*([\d.]+)\}', text)
+    match = re.search(r'\{"plate"\s*:\s*"([A-Z0-9]{4,8})"\s*,\s*"confidence"\s*:\s*([\d.]+)\}', text)
     if match:
-        plate = fix_plate(match.group(1))
-        conf = float(match.group(2))
-        return plate, conf
-    # Buscar cualquier bloque JSON
+        return fix_plate(match.group(1)), float(match.group(2))
     match = re.search(r'\{[^}]+\}', text)
     if match:
         try:
             data = json.loads(match.group())
-            plate = fix_plate(data.get("plate", "ERROR"))
-            conf = float(data.get("confidence", 0.0))
-            return plate, conf
+            return fix_plate(data.get("plate", "ERROR")), float(data.get("confidence", 0.0))
         except Exception:
             pass
     return None, 0.0
@@ -180,34 +175,26 @@ def call_claude(client, b64, model_name):
 def ocr_claude(client, plate_img):
     plate_img = upscale(plate_img)
     b64 = pil_to_b64(plate_img)
-
     for model_name in MODELS:
         try:
             plate1, conf1 = call_claude(client, b64, model_name)
             if plate1 is None:
                 continue
-
             plate2, conf2 = call_claude(client, b64, model_name)
             if plate2 is None:
                 return plate1, conf1, model_name
-
             if plate1 == plate2:
                 return plate1, max(conf1, conf2), model_name
-
-            # Desempate con tercera lectura
             plate3, conf3 = call_claude(client, b64, model_name)
             if plate3 is None:
                 return plate1, conf1, model_name
-
             winner = Counter([plate1, plate2, plate3]).most_common(1)[0][0]
             avg_conf = (conf1 + conf2 + conf3) / 3
             return winner, avg_conf, model_name + "(3x)"
-
         except anthropic.NotFoundError:
             continue
         except Exception as e:
             return "ERROR", 0.0, str(e)
-
     return "SIN_MODELO", 0.0, "ninguno"
 
 def draw_boxes(img_np, detections, texts):
@@ -222,6 +209,187 @@ def draw_boxes(img_np, detections, texts):
                     cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 2)
     return out
 
+# ── PDF generators ─────────────────────────────────────────────────────────────
+def generar_recibo_pdf(plate, yolo_conf, claude_conf, img_pil, numero_recibo):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.units import cm
+    from reportlab.pdfgen import canvas
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    w, h = A4
+    now = datetime.now()
+
+    # Fondo blanco
+    c.setFillColor(colors.white)
+    c.rect(0, 0, w, h, fill=1, stroke=0)
+
+    # Header negro
+    c.setFillColor(colors.black)
+    c.rect(0, h - 80, w, 80, fill=1, stroke=0)
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawCentredString(w / 2, h - 40, "SISTEMA DE DETECCION VEHICULAR")
+    c.setFont("Helvetica", 11)
+    c.drawCentredString(w / 2, h - 62, "Registro Automatico de Placas")
+
+    # Banda azul recibo
+    c.setFillColor(colors.HexColor("#2196F3"))
+    c.rect(0, h - 110, w, 30, fill=1, stroke=0)
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 12)
+    c.drawCentredString(w / 2, h - 101, "RECIBO N " + str(numero_recibo).zfill(6))
+
+    # Datos
+    y = h - 160
+    datos = [
+        ("FECHA DE DETECCION:", now.strftime("%d/%m/%Y")),
+        ("HORA DE DETECCION:", now.strftime("%H:%M:%S")),
+        ("CONFIANZA DETECCION YOLO:", str(round(yolo_conf * 100, 2)) + "%"),
+        ("CONFIANZA OCR CLAUDE:", str(round(claude_conf * 100, 2)) + "%"),
+    ]
+    c.setFont("Helvetica-Bold", 10)
+    c.setFillColor(colors.black)
+    for label, valor in datos:
+        c.drawString(3 * cm, y, label)
+        c.setFont("Helvetica", 10)
+        c.drawString(10 * cm, y, valor)
+        c.setFont("Helvetica-Bold", 10)
+        y -= 22
+
+    # Caja placa amarilla
+    y -= 20
+    c.setFillColor(colors.HexColor("#FFD600"))
+    c.rect(3 * cm, y - 60, w - 6 * cm, 75, fill=1, stroke=0)
+    c.setFillColor(colors.HexColor("#333333"))
+    c.setFont("Helvetica", 9)
+    c.drawCentredString(w / 2, y + 8, "PLACA DETECTADA")
+    c.setFont("Helvetica-Bold", 36)
+    c.drawCentredString(w / 2, y - 38, plate)
+
+    # Imagen del vehiculo
+    y -= 100
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawCentredString(w / 2, y, "FOTOGRAFIA DEL VEHICULO")
+    y -= 10
+
+    # Convertir imagen PIL a bytes para reportlab
+    img_buf = io.BytesIO()
+    img_pil_rgb = img_pil.convert("RGB")
+    # Redimensionar para que quepa
+    max_w, max_h = 400, 300
+    img_pil_rgb.thumbnail((max_w, max_h), Image.LANCZOS)
+    img_pil_rgb.save(img_buf, format="JPEG", quality=85)
+    img_buf.seek(0)
+
+    tmp_img = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+    tmp_img.write(img_buf.read())
+    tmp_img.close()
+
+    img_w, img_h = img_pil_rgb.size
+    x_img = (w - img_w) / 2
+    c.drawImage(tmp_img.name, x_img, y - img_h, width=img_w, height=img_h)
+    os.unlink(tmp_img.name)
+
+    # Footer
+    c.setFillColor(colors.HexColor("#888888"))
+    c.setFont("Helvetica", 8)
+    c.drawCentredString(w / 2, 30, "Este documento es generado automaticamente por el Sistema de Deteccion Vehicular")
+
+    c.save()
+    buf.seek(0)
+    return buf
+
+def generar_historial_pdf(history):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.units import cm
+    from reportlab.pdfgen import canvas
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    w, h = A4
+    now = datetime.now()
+
+    # Header
+    c.setFillColor(colors.black)
+    c.rect(0, h - 80, w, 80, fill=1, stroke=0)
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawCentredString(w / 2, h - 40, "HISTORIAL DE DETECCIONES")
+    c.setFont("Helvetica", 11)
+    c.drawCentredString(w / 2, h - 62, "Sistema de Deteccion Vehicular - Talento Tech 2026")
+
+    # Banda azul
+    c.setFillColor(colors.HexColor("#2196F3"))
+    c.rect(0, h - 110, w, 30, fill=1, stroke=0)
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawCentredString(w / 2, h - 101, "Generado: " + now.strftime("%d/%m/%Y %H:%M:%S"))
+
+    # Tabla encabezado
+    y = h - 145
+    c.setFillColor(colors.HexColor("#333333"))
+    c.rect(2 * cm, y - 5, w - 4 * cm, 25, fill=1, stroke=0)
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(3 * cm, y + 5, "N")
+    c.drawString(5 * cm, y + 5, "PLACA")
+    c.drawString(12 * cm, y + 5, "CONFIANZA")
+    c.drawString(16 * cm, y + 5, "ESTADO")
+
+    y -= 30
+    for i, entry in enumerate(reversed(history)):
+        if y < 60:
+            c.showPage()
+            y = h - 60
+
+        bg = colors.HexColor("#F5F5F5") if i % 2 == 0 else colors.white
+        c.setFillColor(bg)
+        c.rect(2 * cm, y - 5, w - 4 * cm, 22, fill=1, stroke=0)
+
+        conf_pct = round(entry["conf"] * 100, 1)
+        estado = "ALTA" if entry["conf"] >= 0.85 else "BAJA"
+        estado_color = colors.HexColor("#2E7D32") if entry["conf"] >= 0.85 else colors.HexColor("#E65100")
+
+        c.setFillColor(colors.black)
+        c.setFont("Helvetica", 10)
+        c.drawString(3 * cm, y + 5, str(len(history) - i))
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(5 * cm, y + 5, entry["plate"])
+        c.setFont("Helvetica", 10)
+        c.drawString(12 * cm, y + 5, str(conf_pct) + "%")
+        c.setFillColor(estado_color)
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(16 * cm, y + 5, estado)
+
+        y -= 25
+
+    # Resumen
+    y -= 20
+    total = len(history)
+    altas = sum(1 for e in history if e["conf"] >= 0.85)
+    c.setFillColor(colors.HexColor("#E3F2FD"))
+    c.rect(2 * cm, y - 10, w - 4 * cm, 55, fill=1, stroke=0)
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(3 * cm, y + 30, "RESUMEN")
+    c.setFont("Helvetica", 10)
+    c.drawString(3 * cm, y + 12, "Total de detecciones: " + str(total))
+    c.drawString(3 * cm, y - 2, "Detecciones con alta confianza (>85%): " + str(altas) + " de " + str(total))
+
+    # Footer
+    c.setFillColor(colors.HexColor("#888888"))
+    c.setFont("Helvetica", 8)
+    c.drawCentredString(w / 2, 30, "Este documento es generado automaticamente por el Sistema de Deteccion Vehicular")
+
+    c.save()
+    buf.seek(0)
+    return buf
+
+# ── Sidebar ─────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### Configuracion")
     api_key_input = st.text_input("API Key de Anthropic", type="password", placeholder="sk-ant-api03-...")
@@ -243,9 +411,18 @@ with st.sidebar:
         if st.button("Limpiar"):
             st.session_state.history = []
             st.rerun()
+        st.markdown("---")
+        pdf_hist = generar_historial_pdf(st.session_state.history)
+        st.download_button(
+            label="Descargar Historial PDF",
+            data=pdf_hist,
+            file_name="historial_placas_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".pdf",
+            mime="application/pdf",
+        )
     else:
         st.caption("Sin placas aun")
 
+# ── Hero ─────────────────────────────────────────────────────────────────────────
 st.markdown(
     '<div class="hero"><h1>Detector de Placas</h1>'
     '<p>YOLO v8 + Claude Vision - Talento Tech 2026</p></div>',
@@ -287,8 +464,10 @@ def process_image(img_pil):
             llm_ms = int((time.time() - t1) * 1000)
     else:
         texts = [("OCR desactivado", 0.0, "N/A")] * len(detections)
+
     annotated = draw_boxes(img_np, detections, texts)
     annotated_pil = Image.fromarray(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB))
+
     col_img, col_res = st.columns([1.3, 1])
     with col_img:
         st.image(annotated_pil, use_column_width=True, caption="Resultado")
@@ -304,6 +483,7 @@ def process_image(img_pil):
             unsafe_allow_html=True,
         )
         st.caption("Modelo: " + model_used)
+
         for i, ((crop_pil, _, yconf), (text, lconf, _)) in enumerate(zip(detections, texts)):
             badge = "badge-ok" if lconf >= 0.85 else "badge-low"
             st.markdown(
@@ -316,6 +496,19 @@ def process_image(img_pil):
             )
             if show_crops:
                 st.image(crop_pil, caption="Recorte " + str(i + 1), width=240)
+
+            # Boton descargar recibo PDF
+            if text not in ("OCR desactivado", "ILEGIBLE", "ERROR", "SIN_MODELO", "ERROR_JSON"):
+                num = st.session_state.recibo_counter
+                pdf_buf = generar_recibo_pdf(text, yconf, lconf, img_pil, num)
+                st.download_button(
+                    label="Descargar Recibo PDF - " + text,
+                    data=pdf_buf,
+                    file_name="recibo_" + text + "_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".pdf",
+                    mime="application/pdf",
+                    key="recibo_" + str(i) + "_" + str(time.time()),
+                )
+                st.session_state.recibo_counter += 1
 
 with tab_img:
     uploaded = st.file_uploader(
