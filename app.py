@@ -20,109 +20,23 @@ st.set_page_config(
 
 CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap');
-
 .stApp { background: #0a0a0f; color: #e8e6f0; }
-
-section[data-testid="stSidebar"] {
-    background: #08080e;
-    border-right: 1px solid #1a1a2e;
-}
-
-.hero {
-    background: #0d1a3a;
-    border: 1px solid #2a1a4a;
-    border-radius: 16px;
-    padding: 2rem 2.5rem;
-    margin-bottom: 2rem;
-}
-.hero h1 {
-    font-size: 2.2rem;
-    font-weight: 800;
-    color: #a78bfa;
-    margin: 0 0 0.3rem 0;
-}
+section[data-testid="stSidebar"] { background: #08080e; border-right: 1px solid #1a1a2e; }
+.hero { background: #0d1a3a; border: 1px solid #2a1a4a; border-radius: 16px; padding: 2rem 2.5rem; margin-bottom: 2rem; }
+.hero h1 { font-size: 2rem; font-weight: 800; color: #a78bfa; margin: 0 0 0.3rem 0; }
 .hero p { color: #94a3b8; margin: 0; }
-
-.plate-box {
-    background: #0f172a;
-    border: 2px solid #7c3aed;
-    border-radius: 12px;
-    padding: 1.5rem;
-    text-align: center;
-    margin-bottom: 1rem;
-}
-.plate-text {
-    font-family: 'DM Mono', monospace;
-    font-size: 2.5rem;
-    font-weight: 500;
-    letter-spacing: 0.15em;
-    color: #f1f5f9;
-    background: #1e293b;
-    border: 1px solid #334155;
-    border-radius: 8px;
-    padding: 0.5rem 1.5rem;
-    display: inline-block;
-    margin: 0.5rem 0;
-}
-.conf-ok {
-    display: inline-block;
-    background: #064e3b;
-    color: #34d399;
-    font-size: 0.82rem;
-    font-family: 'DM Mono', monospace;
-    padding: 0.2rem 0.8rem;
-    border-radius: 99px;
-}
-.conf-low {
-    display: inline-block;
-    background: #451a03;
-    color: #fb923c;
-    font-size: 0.82rem;
-    font-family: 'DM Mono', monospace;
-    padding: 0.2rem 0.8rem;
-    border-radius: 99px;
-}
-.metrics {
-    display: flex;
-    gap: 0.8rem;
-    margin: 1rem 0;
-    flex-wrap: wrap;
-}
-.met {
-    flex: 1;
-    min-width: 110px;
-    background: #0f0f1a;
-    border: 1px solid #1e2035;
-    border-radius: 10px;
-    padding: 0.8rem;
-    text-align: center;
-}
-.met-val { font-size: 1.4rem; font-weight: 700; color: #a78bfa; font-family: 'DM Mono', monospace; }
-.met-lbl { font-size: 0.72rem; color: #64748b; }
-
-.hist-item {
-    background: #0d0d18;
-    border: 1px solid #1a1a2e;
-    border-radius: 6px;
-    padding: 0.6rem 0.8rem;
-    margin-bottom: 0.4rem;
-    font-family: 'DM Mono', monospace;
-    font-size: 0.85rem;
-    display: flex;
-    justify-content: space-between;
-}
+.plate-box { background: #0f172a; border: 2px solid #7c3aed; border-radius: 12px; padding: 1.5rem; text-align: center; margin-bottom: 1rem; }
+.plate-text { font-size: 2.2rem; font-weight: 700; letter-spacing: 0.15em; color: #f1f5f9; background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 0.4rem 1.2rem; display: inline-block; margin: 0.5rem 0; font-family: monospace; }
+.badge-ok { display: inline-block; background: #064e3b; color: #34d399; font-size: 0.82rem; padding: 0.2rem 0.8rem; border-radius: 99px; }
+.badge-low { display: inline-block; background: #451a03; color: #fb923c; font-size: 0.82rem; padding: 0.2rem 0.8rem; border-radius: 99px; }
+.metrics { display: flex; gap: 0.8rem; margin: 1rem 0; flex-wrap: wrap; }
+.met { flex: 1; min-width: 100px; background: #0f0f1a; border: 1px solid #1e2035; border-radius: 10px; padding: 0.8rem; text-align: center; }
+.met-val { font-size: 1.3rem; font-weight: 700; color: #a78bfa; font-family: monospace; }
+.met-lbl { font-size: 0.7rem; color: #64748b; }
+.hist-item { background: #0d0d18; border: 1px solid #1a1a2e; border-radius: 6px; padding: 0.5rem 0.8rem; margin-bottom: 0.4rem; font-family: monospace; font-size: 0.85rem; display: flex; justify-content: space-between; }
 .hist-plate { color: #e2e8f0; }
 .hist-conf { color: #64748b; }
-
-.footer {
-    text-align: center;
-    color: #334155;
-    font-size: 0.75rem;
-    margin-top: 3rem;
-    padding-top: 1rem;
-    border-top: 1px solid #1a1a2e;
-}
+.footer { text-align: center; color: #334155; font-size: 0.75rem; margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #1a1a2e; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -130,18 +44,32 @@ st.markdown(CSS, unsafe_allow_html=True)
 if "history" not in st.session_state:
     st.session_state.history = []
 
+# Modelos en orden de prioridad - el primero disponible se usa
+MODELS = [
+    "claude-3-haiku-20240307",
+    "claude-3-5-haiku-20241022",
+    "claude-3-5-sonnet-20241022",
+]
+
 @st.cache_resource
 def load_yolo():
     return YOLO("best.pt")
 
-@st.cache_resource
-def get_claude():
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        try:
-            api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
-        except Exception:
-            api_key = ""
+def get_api_key():
+    # 1. Variable de entorno (ingresada en sidebar)
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if key:
+        return key
+    # 2. Streamlit secrets (configurado en Streamlit Cloud)
+    try:
+        key = st.secrets["ANTHROPIC_API_KEY"].strip()
+        if key:
+            return key
+    except Exception:
+        pass
+    return ""
+
+def make_client(api_key):
     if not api_key:
         return None
     return anthropic.Anthropic(api_key=api_key)
@@ -178,31 +106,50 @@ def ocr_claude(client, plate_img):
     plate_img = upscale(plate_img)
     b64 = pil_to_b64(plate_img)
     prompt = (
-        "You are an expert license plate OCR for Latin American vehicles. "
-        "Look at the plate image and return ONLY valid JSON, no markdown:\n"
-        '{"plate":"ABC123","confidence":0.97}\n'
-        "Rules: plate = uppercase alphanumeric only, no spaces/dashes. "
-        "confidence = 0.0-1.0. If unreadable use plate=ILEGIBLE and confidence<0.5."
+        "Look at this license plate image. "
+        "Return ONLY a JSON object, no markdown, no explanation:\n"
+        "{\"plate\":\"ABC123\",\"confidence\":0.97}\n"
+        "Rules: plate must be uppercase alphanumeric only, no spaces or dashes. "
+        "confidence is 0.0 to 1.0. "
+        "If unreadable return: {\"plate\":\"ILEGIBLE\",\"confidence\":0.2}"
     )
-    response = client.messages.create(
-        model="claude-3-5-sonnet-20241022",
-        max_tokens=128,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
-                {"type": "text", "text": prompt}
-            ]
-        }]
-    )
-    raw = response.content[0].text.strip()
-    raw = re.sub(r"```[a-z]*", "", raw).strip().strip("`")
-    data = json.loads(raw)
-    return data.get("plate", "ERROR"), float(data.get("confidence", 0.0))
+    for model_name in MODELS:
+        try:
+            response = client.messages.create(
+                model=model_name,
+                max_tokens=100,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": b64
+                            }
+                        },
+                        {"type": "text", "text": prompt}
+                    ]
+                }]
+            )
+            raw = response.content[0].text.strip()
+            raw = re.sub(r"```[a-z]*", "", raw).strip().strip("`")
+            data = json.loads(raw)
+            plate = data.get("plate", "ERROR")
+            conf = float(data.get("confidence", 0.0))
+            return plate, conf, model_name
+        except anthropic.NotFoundError:
+            continue
+        except json.JSONDecodeError:
+            return "ERROR_JSON", 0.0, model_name
+        except Exception as e:
+            return "ERROR", 0.0, str(e)
+    return "SIN_MODELO", 0.0, "ninguno"
 
 def draw_boxes(img_np, detections, texts):
     out = img_np.copy()
-    for (_, (x1, y1, x2, y2), _), (text, lconf) in zip(detections, texts):
+    for (_, (x1, y1, x2, y2), _), (text, lconf, _) in zip(detections, texts):
         color = (124, 58, 237)
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 3)
         label = text + "  " + str(round(lconf * 100)) + "%"
@@ -215,24 +162,30 @@ def draw_boxes(img_np, detections, texts):
 # ── Sidebar ──
 with st.sidebar:
     st.markdown("### Configuracion")
-    api_key_input = st.text_input("API Key de Anthropic", type="password", placeholder="sk-ant-...")
+    api_key_input = st.text_input(
+        "API Key de Anthropic",
+        type="password",
+        placeholder="sk-ant-api03-...",
+        help="Pega aqui tu API key de platform.claude.com"
+    )
     if api_key_input:
-        os.environ["ANTHROPIC_API_KEY"] = api_key_input
+        os.environ["ANTHROPIC_API_KEY"] = api_key_input.strip()
+
     st.markdown("---")
     conf_threshold = st.slider("Confianza YOLO minima", 0.1, 0.9, 0.35, 0.05)
-    show_crops = st.checkbox("Mostrar recortes de placa", value=True)
+    show_crops = st.checkbox("Mostrar recortes", value=True)
     st.markdown("---")
     st.markdown("**Historial**")
     if st.session_state.history:
         for e in reversed(st.session_state.history[-10:]):
-            cls = "conf-ok" if e["conf"] >= 0.85 else "conf-low"
+            pct = str(round(e["conf"] * 100))
             st.markdown(
                 '<div class="hist-item">'
                 '<span class="hist-plate">' + e["plate"] + '</span>'
-                '<span class="hist-conf">' + str(round(e["conf"] * 100)) + '%</span>'
+                '<span class="hist-conf">' + pct + '%</span>'
                 '</div>',
                 unsafe_allow_html=True)
-        if st.button("Limpiar historial"):
+        if st.button("Limpiar"):
             st.session_state.history = []
             st.rerun()
     else:
@@ -240,16 +193,23 @@ with st.sidebar:
 
 # ── Hero ──
 st.markdown(
-    '<div class="hero"><h1>Detector de Placas</h1>'
-    '<p>YOLO v8 + Claude Vision · Talento Tech Bootcamp IA 2026</p></div>',
+    '<div class="hero">'
+    '<h1>Detector de Placas</h1>'
+    '<p>YOLO v8 + Claude Vision &middot; Talento Tech 2026</p>'
+    '</div>',
     unsafe_allow_html=True)
 
 with st.spinner("Cargando modelo YOLO..."):
     yolo_model = load_yolo()
-claude_client = get_claude()
 
-if not claude_client:
-    st.warning("Ingresa tu API Key de Anthropic en el panel izquierdo.", icon="🔑")
+# Obtener key y crear cliente en cada ejecucion
+api_key = get_api_key()
+claude_client = make_client(api_key)
+
+if not api_key:
+    st.warning("Ingresa tu API Key de Anthropic en el panel izquierdo para activar el OCR.", icon="🔑")
+else:
+    st.success("API Key detectada correctamente.", icon="✅")
 
 tab_img, tab_cam, tab_video = st.tabs(["Imagen", "Camara", "Video"])
 
@@ -262,54 +222,65 @@ def process_image(img_pil):
         yolo_ms = int((time.time() - t0) * 1000)
 
     if not detections:
-        st.error("No se detectaron placas. Intenta con otra foto o baja la confianza minima.")
+        st.error("No se detectaron placas. Baja la confianza minima o usa otra foto.")
         return
 
     texts = []
     llm_ms = 0
+    model_used = "N/A"
+
     if claude_client:
         with st.spinner("Extrayendo texto con Claude Vision..."):
             t1 = time.time()
             for crop_pil, _, _ in detections:
-                text, lconf = ocr_claude(claude_client, crop_pil)
-                texts.append((text, lconf))
+                text, lconf, model_used = ocr_claude(claude_client, crop_pil)
+                texts.append((text, lconf, model_used))
                 st.session_state.history.append({"plate": text, "conf": lconf})
             llm_ms = int((time.time() - t1) * 1000)
     else:
-        texts = [("OCR desactivado", 0.0)] * len(detections)
+        texts = [("OCR desactivado", 0.0, "N/A")] * len(detections)
 
     annotated = draw_boxes(img_np, detections, texts)
     annotated_pil = Image.fromarray(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB))
 
     col_img, col_res = st.columns([1.3, 1])
     with col_img:
-        st.image(annotated_pil, use_column_width=True, caption="Imagen anotada")
+        st.image(annotated_pil, use_column_width=True, caption="Resultado")
+
     with col_res:
-        avg = int(np.mean([c for _, c in texts]) * 100) if texts else 0
+        avg = int(np.mean([c for _, c, _ in texts]) * 100) if texts else 0
+        n = str(len(detections))
         st.markdown(
             '<div class="metrics">'
-            '<div class="met"><div class="met-val">' + str(len(detections)) + '</div><div class="met-lbl">Placas</div></div>'
-            '<div class="met"><div class="met-val">' + str(avg) + '%</div><div class="met-lbl">Confianza OCR</div></div>'
+            '<div class="met"><div class="met-val">' + n + '</div><div class="met-lbl">Placas</div></div>'
+            '<div class="met"><div class="met-val">' + str(avg) + '%</div><div class="met-lbl">Confianza</div></div>'
             '<div class="met"><div class="met-val">' + str(yolo_ms) + 'ms</div><div class="met-lbl">YOLO</div></div>'
             '<div class="met"><div class="met-val">' + str(llm_ms) + 'ms</div><div class="met-lbl">Claude</div></div>'
             '</div>',
             unsafe_allow_html=True)
 
-        for i, ((crop_pil, _, yconf), (text, lconf)) in enumerate(zip(detections, texts)):
-            badge = "conf-ok" if lconf >= 0.85 else "conf-low"
+        st.caption("Modelo usado: " + model_used)
+
+        for i, ((crop_pil, _, yconf), (text, lconf, _)) in enumerate(zip(detections, texts)):
+            badge = "badge-ok" if lconf >= 0.85 else "badge-low"
+            yp = str(round(yconf * 100, 1))
+            lp = str(round(lconf * 100, 1))
+            num = str(i + 1)
             st.markdown(
                 '<div class="plate-box">'
-                '<div style="color:#94a3b8;font-size:0.78rem;margin-bottom:0.3rem">PLACA ' + str(i + 1) + '</div>'
+                '<div style="color:#94a3b8;font-size:0.75rem;margin-bottom:0.3rem">PLACA ' + num + '</div>'
                 '<div class="plate-text">' + text + '</div><br>'
-                '<span class="' + badge + '">Claude: ' + str(round(lconf * 100, 1)) + '% · YOLO: ' + str(round(yconf * 100, 1)) + '%</span>'
+                '<span class="' + badge + '">Claude ' + lp + '%  YOLO ' + yp + '%</span>'
                 '</div>',
                 unsafe_allow_html=True)
             if show_crops:
-                st.image(crop_pil, caption="Recorte " + str(i + 1), width=260)
+                st.image(crop_pil, caption="Recorte " + num, width=240)
 
 with tab_img:
-    uploaded = st.file_uploader("Sube una imagen", type=["jpg", "jpeg", "png", "webp", "bmp"],
-                                label_visibility="collapsed")
+    uploaded = st.file_uploader(
+        "Sube una imagen del vehiculo",
+        type=["jpg", "jpeg", "png", "webp", "bmp"],
+        label_visibility="collapsed")
     if uploaded:
         process_image(Image.open(uploaded).convert("RGB"))
 
@@ -319,8 +290,11 @@ with tab_cam:
         process_image(Image.open(cam).convert("RGB"))
 
 with tab_video:
-    vfile = st.file_uploader("Sube un video (MP4, AVI, MOV)", type=["mp4", "avi", "mov", "mkv"],
-                             label_visibility="collapsed", key="vid")
+    vfile = st.file_uploader(
+        "Sube un video (MP4, AVI, MOV)",
+        type=["mp4", "avi", "mov", "mkv"],
+        label_visibility="collapsed",
+        key="vid")
     fstep = st.slider("Analizar cada N fotogramas", 10, 60, 30)
 
     if vfile and st.button("Analizar video"):
@@ -342,29 +316,32 @@ with tab_video:
                 dets = detect_plates(yolo_model, frame, conf_thr=conf_threshold)
                 if dets and claude_client:
                     for crop_pil, _, _ in dets:
-                        text, lconf = ocr_claude(claude_client, crop_pil)
-                        if text not in ("ILEGIBLE", "ERROR") and lconf > 0.6:
+                        text, lconf, _ = ocr_claude(claude_client, crop_pil)
+                        if text not in ("ILEGIBLE", "ERROR", "SIN_MODELO", "ERROR_JSON") and lconf > 0.6:
                             found[text] = max(found.get(text, 0), lconf)
                             st.session_state.history.append({"plate": text, "conf": lconf})
             idx += 1
-            prog.progress(min(idx / max(total, 1), 1.0), text="Fotograma " + str(idx) + "/" + str(total))
+            pct = min(idx / max(total, 1), 1.0)
+            prog.progress(pct, text="Fotograma " + str(idx) + "/" + str(total))
 
         cap.release()
         os.unlink(tmp_path)
         prog.empty()
 
         if found:
-            st.success(str(len(found)) + " placa(s) unicas encontradas")
+            st.success(str(len(found)) + " placa(s) encontradas en el video")
             for plate, conf in sorted(found.items(), key=lambda x: -x[1]):
-                badge = "conf-ok" if conf >= 0.85 else "conf-low"
+                badge = "badge-ok" if conf >= 0.85 else "badge-low"
+                cp = str(round(conf * 100, 1))
                 st.markdown(
                     '<div class="plate-box">'
                     '<div class="plate-text">' + plate + '</div><br>'
-                    '<span class="' + badge + '">Confianza: ' + str(round(conf * 100, 1)) + '%</span>'
+                    '<span class="' + badge + '">Confianza: ' + cp + '%</span>'
                     '</div>',
                     unsafe_allow_html=True)
         else:
             st.warning("No se detectaron placas legibles en el video.")
 
-st.markdown('<div class="footer">Talento Tech · Bootcamp IA Innovador 2026 · YOLO v8 + Claude Vision</div>',
-            unsafe_allow_html=True)
+st.markdown(
+    '<div class="footer">Talento Tech &middot; Bootcamp IA Innovador 2026 &middot; YOLO v8 + Claude Vision</div>',
+    unsafe_allow_html=True)
