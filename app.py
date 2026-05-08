@@ -11,6 +11,7 @@ import tempfile
 import time
 import json
 import re
+from collections import Counter
 
 st.set_page_config(
     page_title="Detector de Placas - Talento Tech 2026",
@@ -18,7 +19,6 @@ st.set_page_config(
     layout="wide",
 )
 
-# CSS sin valores decimales que confundan al parser
 css_parts = [
     "<style>",
     ".stApp{background:rgb(10,10,15);color:rgb(232,230,240);}",
@@ -94,147 +94,116 @@ def detect_plates(model, img_np, conf_thr=0.35):
     return sorted(plates, key=lambda x: -x[2])
 
 def upscale(img, min_w=480):
-    from PIL import ImageEnhance, ImageFilter
+    from PIL import ImageEnhance
     w, h = img.size
-    # upscale si es pequena
     if w < min_w:
         s = min_w / w
         img = img.resize((int(w * s), int(h * s)), Image.LANCZOS)
-    # aumentar contraste y nitidez para mejorar OCR
     img = ImageEnhance.Contrast(img).enhance(1.5)
     img = ImageEnhance.Sharpness(img).enhance(2.0)
     return img
 
 def fix_plate(plate):
-    """
-    Post-procesamiento para corregir errores comunes de OCR en placas colombianas.
-    Formato: 3 letras + 3 digitos.
-    Posiciones 0-1-2 deben ser letras: corrige digitos que parecen letras.
-    Posiciones 3-4-5 deben ser digitos: corrige letras que parecen digitos.
-    """
     if not plate or plate in ("ILEGIBLE", "ERROR", "ERROR_JSON", "SIN_MODELO"):
         return plate
-
-    plate = plate.upper().strip()
-    # quitar espacios y guiones
-    plate = plate.replace(" ", "").replace("-", "")
-
+    plate = plate.upper().strip().replace(" ", "").replace("-", "")
     if len(plate) != 6:
         return plate
-
-    # Mapa de correcciones para posiciones de LETRAS (0,1,2)
-    # digito -> letra mas probable
-    digit_to_letter = {
-        "0": "O",
-        "1": "I",
-        "2": "Z",
-        "5": "S",
-        "6": "G",
-        "8": "B",
-    }
-
-    # Mapa de correcciones para posiciones de DIGITOS (3,4,5)
-    # letra -> digito mas probable
-    letter_to_digit = {
-        "O": "0",
-        "I": "1",
-        "Z": "2",
-        "S": "5",
-        "G": "6",
-        "B": "8",
-        "Q": "0",
-    }
-
-    # Correccion especial en posiciones de letra:
-    # O que deberia ser Q no se puede saber sin contexto visual
-    # pero si Claude dice O en pos 0-1-2, puede ser Q
-    # Usamos el contexto: si el caracter es O y esta en pos de letra,
-    # NO lo cambiamos porque O es letra valida.
-    # Lo que si corregimos: digitos en posiciones de letra
-
+    digit_to_letter = {"0": "O", "1": "I", "2": "Z", "5": "S", "6": "G", "8": "B"}
+    letter_to_digit = {"O": "0", "I": "1", "Z": "2", "S": "5", "G": "6", "B": "8", "Q": "0"}
     result = list(plate)
-
-    for i in range(3):  # posiciones 0,1,2 -> deben ser letras
-        c = result[i]
-        if c.isdigit():
-            result[i] = digit_to_letter.get(c, c)
-
-    for i in range(3, 6):  # posiciones 3,4,5 -> deben ser digitos
-        c = result[i]
-        if c.isalpha():
-            result[i] = letter_to_digit.get(c, c)
-
+    for i in range(3):
+        if result[i].isdigit():
+            result[i] = digit_to_letter.get(result[i], result[i])
+    for i in range(3, 6):
+        if result[i].isalpha():
+            result[i] = letter_to_digit.get(result[i], result[i])
     return "".join(result)
 
+def build_prompt():
+    lines = [
+        "You are a specialized OCR system for Colombian vehicle license plates.",
+        "Analyze this plate image with extreme attention to detail.",
+        "Colombian plates format: exactly 3 uppercase LETTERS then 3 DIGITS.",
+        "RULE: positions 1-2-3 are ALWAYS letters, positions 4-5-6 are ALWAYS digits.",
+        "CRITICAL character distinctions:",
+        "- Q vs O: Q has a small diagonal tail cutting through the bottom-right of the oval.",
+        "  O is a perfectly clean oval with NO tail and NO extra marks.",
+        "  Q is very common in Colombian plates. If the oval has ANY mark at bottom-right it is Q.",
+        "- M vs N: M has FOUR vertical strokes with two inner diagonals forming a V shape in the center.",
+        "  N has THREE strokes with only one diagonal. Count the strokes carefully.",
+        "- B vs 8: B has flat left side with two bumps right, 8 is symmetrical.",
+        "- A vs 4: A has pointed top and crossbar, 4 has open top.",
+        "Ignore city or department text below the main characters (CALI, BOGOTA, PASTO, ENVIGADO, FUNZA, MEDELLIN).",
+        "Remove any spaces or dashes between the 6 characters.",
+        'Return ONLY JSON, no markdown: {"plate":"KDQ742","confidence":0.97}',
+        "confidence 0.0 to 1.0. ILEGIBLE only if completely unreadable.",
+    ]
+    return " ".join(lines)
+
+def parse_response(raw):
+    raw = re.sub(r"```[a-z]*", "", raw).strip().strip("`")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        match = re.search(r"\{[^}]+\}", raw)
+        if match:
+            try:
+                data = json.loads(match.group())
+            except Exception:
+                return None, 0.0
+        else:
+            return None, 0.0
+    plate = fix_plate(data.get("plate", "ERROR"))
+    conf = float(data.get("confidence", 0.0))
+    return plate, conf
 
 def ocr_claude(client, plate_img):
     plate_img = upscale(plate_img)
     b64 = pil_to_b64(plate_img)
-    prompt = (
-        "You are a specialized OCR system for Colombian vehicle license plates. "
-        "Analyze this plate image with extreme attention to detail. "
-        "Colombian plates format: exactly 3 uppercase LETTERS then 3 DIGITS. "
-        "CRITICAL: These character pairs are commonly confused - study carefully: "
-        "- Q vs O: VERY IMPORTANT - Q has a small diagonal tail or extra stroke at the bottom right. "
-        "  O is a perfectly clean oval with absolutely no tail or extra mark. "
-        "  In Colombian plates Q appears frequently. If the oval character has ANY extra mark or tail, it is Q. "
-        "- Q vs J: Q is a full round circle with a tail at bottom right, J is narrow and tall with hook at bottom left "
-        "- M vs H: M has two diagonal inner strokes forming a V shape, H has one horizontal bar "
-        "- M vs N: THIS IS CRITICAL - M has 4 vertical strokes with two diagonals meeting in center forming a W/V shape inside, N has only 3 vertical strokes with one diagonal going from top-left to bottom-right. When unsure between M and N, zoom in mentally on the center: if you see a V shape pointing down, it is M. If you see only one diagonal line, it is N. "
-        "- B vs 8: B has flat left side with two bumps right, 8 is symmetrical "
-        "- A vs 4: A has a pointed top and crossbar, 4 has open top "
-        "- O vs 0: first 3 positions are ALWAYS letters so O, last 3 ALWAYS digits so 0 "
-        "- I vs 1: first 3 positions are ALWAYS letters so I, last 3 ALWAYS digits so 1 "
-        "RULE: positions 1-2-3 are ALWAYS letters, positions 4-5-6 are ALWAYS digits. "
-        "Ignore city or department text below main characters (CALI, BOGOTA, PASTO, ENVIGADO, FUNZA, etc). "
-        "Remove any spaces or dashes between characters. "
-        "Return ONLY JSON, no markdown, no explanation: "
-        "{\"plate\":\"RDM076\",\"confidence\":0.97} "
-        "confidence 0.0 to 1.0. ILEGIBLE only if completely unreadable."
-    )
+    prompt = build_prompt()
+
+    def call_model(model_name):
+        response = client.messages.create(
+            model=model_name,
+            max_tokens=100,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+        )
+        return parse_response(response.content[0].text.strip())
+
     for model_name in MODELS:
         try:
-            response = client.messages.create(
-                model=model_name,
-                max_tokens=100,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/jpeg",
-                                "data": b64,
-                            },
-                        },
-                        {"type": "text", "text": prompt},
-                    ],
-                }],
-            )
-            raw = response.content[0].text.strip()
-            raw = re.sub(r"```[a-z]*", "", raw).strip().strip("`")
-            data = json.loads(raw)
-            plate = data.get("plate", "ERROR")
-            conf = float(data.get("confidence", 0.0))
-            plate = fix_plate(plate)
-            return plate, conf, model_name
+            plate1, conf1 = call_model(model_name)
+            if plate1 is None:
+                return "ERROR_JSON", 0.0, model_name
+
+            plate2, conf2 = call_model(model_name)
+            if plate2 is None:
+                return plate1, conf1, model_name
+
+            if plate1 == plate2:
+                return plate1, max(conf1, conf2), model_name
+
+            # Discrepancia: tercera lectura de desempate
+            plate3, conf3 = call_model(model_name)
+            if plate3 is None:
+                return plate1, conf1, model_name
+
+            winner = Counter([plate1, plate2, plate3]).most_common(1)[0][0]
+            avg_conf = (conf1 + conf2 + conf3) / 3
+            return winner, avg_conf, model_name + "(3x)"
+
         except anthropic.NotFoundError:
             continue
-        except (json.JSONDecodeError, ValueError):
-            # intenta extraer JSON aunque Claude agregue texto extra
-            try:
-                match = __import__('re').search(r'\{[^}]+\}', raw)
-                if match:
-                    data2 = json.loads(match.group())
-                    plate2 = data2.get("plate", "ERROR")
-                    conf2 = float(data2.get("confidence", 0.0))
-                    return plate2, conf2, model_name
-            except Exception:
-                pass
-            return "ERROR_JSON", 0.0, model_name
         except Exception as e:
             return "ERROR", 0.0, str(e)
+
     return "SIN_MODELO", 0.0, "ninguno"
 
 def draw_boxes(img_np, detections, texts):
@@ -249,14 +218,9 @@ def draw_boxes(img_np, detections, texts):
                     cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 2)
     return out
 
-# Sidebar
 with st.sidebar:
     st.markdown("### Configuracion")
-    api_key_input = st.text_input(
-        "API Key de Anthropic",
-        type="password",
-        placeholder="sk-ant-api03-...",
-    )
+    api_key_input = st.text_input("API Key de Anthropic", type="password", placeholder="sk-ant-api03-...")
     if api_key_input:
         os.environ["ANTHROPIC_API_KEY"] = api_key_input.strip()
     st.markdown("---")
@@ -268,10 +232,8 @@ with st.sidebar:
         for e in reversed(st.session_state.history[-10:]):
             pct = str(round(e["conf"] * 100))
             st.markdown(
-                '<div class="hist-item">'
-                '<span class="hist-plate">' + e["plate"] + '</span>'
-                '<span class="hist-conf">' + pct + '%</span>'
-                '</div>',
+                '<div class="hist-item"><span class="hist-plate">' + e["plate"] +
+                '</span><span class="hist-conf">' + pct + '%</span></div>',
                 unsafe_allow_html=True,
             )
         if st.button("Limpiar"):
@@ -280,12 +242,9 @@ with st.sidebar:
     else:
         st.caption("Sin placas aun")
 
-# Hero
 st.markdown(
-    '<div class="hero">'
-    '<h1>Detector de Placas</h1>'
-    '<p>YOLO v8 + Claude Vision - Talento Tech 2026</p>'
-    '</div>',
+    '<div class="hero"><h1>Detector de Placas</h1>'
+    '<p>YOLO v8 + Claude Vision - Talento Tech 2026</p></div>',
     unsafe_allow_html=True,
 )
 
@@ -301,7 +260,6 @@ else:
     st.success("API Key detectada correctamente.", icon="✅")
 
 tab_img, tab_cam, tab_video = st.tabs(["Imagen", "Camara", "Video"])
-
 
 def process_image(img_pil):
     img_np = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
@@ -320,7 +278,7 @@ def process_image(img_pil):
     model_used = "N/A"
 
     if claude_client:
-        with st.spinner("Extrayendo texto con Claude Vision..."):
+        with st.spinner("Extrayendo texto con Claude Vision (hasta 3 lecturas por placa)..."):
             t1 = time.time()
             for crop_pil, _, _ in detections:
                 text, lconf, model_used = ocr_claude(claude_client, crop_pil)
@@ -336,7 +294,6 @@ def process_image(img_pil):
     col_img, col_res = st.columns([1.3, 1])
     with col_img:
         st.image(annotated_pil, use_column_width=True, caption="Resultado")
-
     with col_res:
         avg = int(np.mean([c for _, c, _ in texts]) * 100) if texts else 0
         st.markdown(
@@ -349,7 +306,6 @@ def process_image(img_pil):
             unsafe_allow_html=True,
         )
         st.caption("Modelo: " + model_used)
-
         for i, ((crop_pil, _, yconf), (text, lconf, _)) in enumerate(zip(detections, texts)):
             badge = "badge-ok" if lconf >= 0.85 else "badge-low"
             st.markdown(
@@ -362,7 +318,6 @@ def process_image(img_pil):
             )
             if show_crops:
                 st.image(crop_pil, caption="Recorte " + str(i + 1), width=240)
-
 
 with tab_img:
     uploaded = st.file_uploader(
@@ -411,10 +366,7 @@ with tab_video:
                             found[text] = max(found.get(text, 0), lconf)
                             st.session_state.history.append({"plate": text, "conf": lconf})
             idx += 1
-            prog.progress(
-                min(idx / max(total, 1), 1.0),
-                text="Fotograma " + str(idx) + "/" + str(total),
-            )
+            prog.progress(min(idx / max(total, 1), 1.0), text="Fotograma " + str(idx) + "/" + str(total))
 
         cap.release()
         os.unlink(tmp_path)
@@ -425,10 +377,8 @@ with tab_video:
             for plate, conf in sorted(found.items(), key=lambda x: -x[1]):
                 badge = "badge-ok" if conf >= 0.85 else "badge-low"
                 st.markdown(
-                    '<div class="plate-box">'
-                    '<div class="plate-text">' + plate + '</div><br>'
-                    '<span class="' + badge + '">Confianza: ' + str(round(conf * 100, 1)) + '%</span>'
-                    '</div>',
+                    '<div class="plate-box"><div class="plate-text">' + plate + '</div><br>'
+                    '<span class="' + badge + '">Confianza: ' + str(round(conf * 100, 1)) + '%</span></div>',
                     unsafe_allow_html=True,
                 )
         else:
