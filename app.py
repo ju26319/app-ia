@@ -46,9 +46,9 @@ if "history" not in st.session_state:
     st.session_state.history = []
 
 MODELS = [
-    "claude-haiku-4-5-20251001",
     "claude-sonnet-4-5-20250929",
     "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
 ]
 
 @st.cache_resource
@@ -93,29 +93,40 @@ def detect_plates(model, img_np, conf_thr=0.35):
             plates.append((crop_pil, (x1, y1, x2, y2), float(box.conf[0])))
     return sorted(plates, key=lambda x: -x[2])
 
-def upscale(img, min_w=320):
+def upscale(img, min_w=480):
+    from PIL import ImageEnhance, ImageFilter
     w, h = img.size
+    # upscale si es pequena
     if w < min_w:
         s = min_w / w
         img = img.resize((int(w * s), int(h * s)), Image.LANCZOS)
+    # aumentar contraste y nitidez para mejorar OCR
+    img = ImageEnhance.Contrast(img).enhance(1.5)
+    img = ImageEnhance.Sharpness(img).enhance(2.0)
     return img
 
 def ocr_claude(client, plate_img):
     plate_img = upscale(plate_img)
     b64 = pil_to_b64(plate_img)
     prompt = (
-        "You are an expert license plate reader for Colombian vehicles. "
-        "Examine this license plate image carefully. "
-        "Colombian plates have 3 uppercase letters and 3 digits. "
-        "The characters may appear separated by a space or dash on the physical plate. "
-        "Examples of valid plates: ENW533 (shown as ENW 533), NTR136, CYW640, BIK957. "
-        "Instructions: read all characters in the main plate area, "
-        "remove any spaces or dashes between characters, "
-        "ignore city name printed below (CALI, BOGOTA, ENVIGADO, etc). "
-        "Return ONLY a JSON object, no markdown, no extra text: "
-        "{\"plate\":\"ENW533\",\"confidence\":0.97} "
-        "confidence is 0.0 to 1.0. "
-        "Only return ILEGIBLE if you truly cannot read any characters."
+        "You are a specialized OCR system for Colombian vehicle license plates. "
+        "Analyze this plate image with extreme attention to detail. "
+        "Colombian plates format: exactly 3 uppercase LETTERS then 3 DIGITS. "
+        "CRITICAL: These character pairs are commonly confused - study carefully: "
+        "- Q vs O: Q has a small tail or diagonal stroke at bottom right, O is a clean oval "
+        "- Q vs J: Q is round with a tail, J has a hook at the bottom "
+        "- M vs H: M has two diagonal inner strokes forming a V shape, H has one horizontal bar "
+        "- M vs N: M has 4 legs (W shape inverted), N has 3 legs "
+        "- B vs 8: B has flat left side with two bumps right, 8 is symmetrical "
+        "- A vs 4: A has a pointed top and crossbar, 4 has open top "
+        "- O vs 0: first 3 positions are ALWAYS letters so O, last 3 ALWAYS digits so 0 "
+        "- I vs 1: first 3 positions are ALWAYS letters so I, last 3 ALWAYS digits so 1 "
+        "RULE: positions 1-2-3 are ALWAYS letters, positions 4-5-6 are ALWAYS digits. "
+        "Ignore city or department text below main characters (CALI, BOGOTA, PASTO, ENVIGADO, FUNZA, etc). "
+        "Remove any spaces or dashes between characters. "
+        "Return ONLY JSON, no markdown, no explanation: "
+        "{\"plate\":\"RDM076\",\"confidence\":0.97} "
+        "confidence 0.0 to 1.0. ILEGIBLE only if completely unreadable."
     )
     for model_name in MODELS:
         try:
