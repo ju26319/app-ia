@@ -51,6 +51,19 @@ MODELS = [
     "claude-haiku-4-5-20251001",
 ]
 
+PROMPT = (
+    "You are an OCR system for Colombian license plates. "
+    "Format: 3 letters + 3 digits. Positions 1-2-3 are ALWAYS letters, 4-5-6 are ALWAYS digits. "
+    "Key distinctions: "
+    "Q has a tail/slash at bottom-right, O is a clean oval with no marks. "
+    "M has 4 legs with V-shape inside, N has 3 legs. "
+    "B has flat left side, 8 is symmetrical. "
+    "Ignore city text below the plate (FUNZA, CALI, BOGOTA, PASTO, MEDELLIN, ENVIGADO, LA CALERA). "
+    "Remove spaces and dashes. "
+    "Respond with ONLY this JSON and nothing else: "
+    "{\"plate\":\"ABC123\",\"confidence\":0.95}"
+)
+
 @st.cache_resource
 def load_yolo():
     return YOLO("best.pt")
@@ -120,79 +133,69 @@ def fix_plate(plate):
             result[i] = letter_to_digit.get(result[i], result[i])
     return "".join(result)
 
-def build_prompt():
-    lines = [
-        "You are a specialized OCR system for Colombian vehicle license plates.",
-        "Colombian plates have exactly 3 LETTERS followed by 3 DIGITS.",
-        "Analyze each of the 6 characters ONE BY ONE from left to right.",
-        "For each character ask yourself:",
-        "POSITIONS 1-2-3 (must be letters):",
-        "  - Is this oval shape a Q or O? Look VERY carefully at the bottom-right.",
-        "    Q always has a small tail, slash, or extra stroke at the bottom-right of the oval.",
-        "    If you see ANY imperfection, mark, or line crossing the oval bottom-right = Q.",
-        "    Only choose O if the oval is 100 percent perfectly clean with zero marks.",
-        "  - Is this M or N? M has a W/V shape inside with 4 legs. N has 3 legs and 1 diagonal.",
-        "  - Is this H or M? H has one horizontal bar in the middle. M has diagonal inner strokes.",
-        "POSITIONS 4-5-6 (must be digits):",
-        "  - Is this 0 or another digit? Count curves and lines carefully.",
-        "Ignore any city name printed below (FUNZA, CALI, BOGOTA, PASTO, MEDELLIN, ENVIGADO).",
-        "Remove spaces and dashes.",
-        'Return ONLY JSON: {"plate":"JQY014","confidence":0.95}',
-        "Use confidence below 0.7 only if truly uncertain.",
-    ]
-    return " ".join(lines)
-
-def parse_response(raw):
-    raw = re.sub(r"```[a-z]*", "", raw).strip().strip("`")
+def parse_response(text):
+    text = text.strip()
+    # Buscar JSON en la respuesta
+    text = re.sub(r"```[a-z]*", "", text).strip().strip("`")
+    # Intentar parsear directo
     try:
-        data = json.loads(raw)
+        data = json.loads(text)
+        plate = fix_plate(data.get("plate", "ERROR"))
+        conf = float(data.get("confidence", 0.0))
+        return plate, conf
     except json.JSONDecodeError:
-        match = re.search(r"\{[^}]+\}", raw)
-        if match:
-            try:
-                data = json.loads(match.group())
-            except Exception:
-                return None, 0.0
-        else:
-            return None, 0.0
-    plate = fix_plate(data.get("plate", "ERROR"))
-    conf = float(data.get("confidence", 0.0))
-    return plate, conf
+        pass
+    # Buscar patron JSON con regex
+    match = re.search(r'\{"plate"\s*:\s*"([A-Z0-9]{6})"\s*,\s*"confidence"\s*:\s*([\d.]+)\}', text)
+    if match:
+        plate = fix_plate(match.group(1))
+        conf = float(match.group(2))
+        return plate, conf
+    # Buscar cualquier bloque JSON
+    match = re.search(r'\{[^}]+\}', text)
+    if match:
+        try:
+            data = json.loads(match.group())
+            plate = fix_plate(data.get("plate", "ERROR"))
+            conf = float(data.get("confidence", 0.0))
+            return plate, conf
+        except Exception:
+            pass
+    return None, 0.0
+
+def call_claude(client, b64, model_name):
+    response = client.messages.create(
+        model=model_name,
+        max_tokens=80,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+                {"type": "text", "text": PROMPT},
+            ],
+        }],
+    )
+    return parse_response(response.content[0].text)
 
 def ocr_claude(client, plate_img):
     plate_img = upscale(plate_img)
     b64 = pil_to_b64(plate_img)
-    prompt = build_prompt()
-
-    def call_model(model_name):
-        response = client.messages.create(
-            model=model_name,
-            max_tokens=100,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
-                    {"type": "text", "text": prompt},
-                ],
-            }],
-        )
-        return parse_response(response.content[0].text.strip())
 
     for model_name in MODELS:
         try:
-            plate1, conf1 = call_model(model_name)
+            plate1, conf1 = call_claude(client, b64, model_name)
             if plate1 is None:
-                return "ERROR_JSON", 0.0, model_name
+                continue
 
-            plate2, conf2 = call_model(model_name)
+            plate2, conf2 = call_claude(client, b64, model_name)
             if plate2 is None:
                 return plate1, conf1, model_name
 
             if plate1 == plate2:
                 return plate1, max(conf1, conf2), model_name
 
-            # Discrepancia: tercera lectura de desempate
-            plate3, conf3 = call_model(model_name)
+            # Desempate con tercera lectura
+            plate3, conf3 = call_claude(client, b64, model_name)
             if plate3 is None:
                 return plate1, conf1, model_name
 
@@ -264,22 +267,18 @@ tab_img, tab_cam, tab_video = st.tabs(["Imagen", "Camara", "Video"])
 
 def process_image(img_pil):
     img_np = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
-
     with st.spinner("Detectando placas con YOLO..."):
         t0 = time.time()
         detections = detect_plates(yolo_model, img_np, conf_thr=conf_threshold)
         yolo_ms = int((time.time() - t0) * 1000)
-
     if not detections:
         st.error("No se detectaron placas. Baja la confianza minima o usa otra foto.")
         return
-
     texts = []
     llm_ms = 0
     model_used = "N/A"
-
     if claude_client:
-        with st.spinner("Extrayendo texto con Claude Vision (hasta 3 lecturas por placa)..."):
+        with st.spinner("Extrayendo texto con Claude Vision..."):
             t1 = time.time()
             for crop_pil, _, _ in detections:
                 text, lconf, model_used = ocr_claude(claude_client, crop_pil)
@@ -288,10 +287,8 @@ def process_image(img_pil):
             llm_ms = int((time.time() - t1) * 1000)
     else:
         texts = [("OCR desactivado", 0.0, "N/A")] * len(detections)
-
     annotated = draw_boxes(img_np, detections, texts)
     annotated_pil = Image.fromarray(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB))
-
     col_img, col_res = st.columns([1.3, 1])
     with col_img:
         st.image(annotated_pil, use_column_width=True, caption="Resultado")
@@ -342,18 +339,15 @@ with tab_video:
         key="vid",
     )
     fstep = st.slider("Analizar cada N fotogramas", 10, 60, 30)
-
     if vfile and st.button("Analizar video"):
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
             tmp.write(vfile.read())
             tmp_path = tmp.name
-
         cap = cv2.VideoCapture(tmp_path)
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         found = {}
         prog = st.progress(0, text="Analizando...")
         idx = 0
-
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
@@ -368,11 +362,9 @@ with tab_video:
                             st.session_state.history.append({"plate": text, "conf": lconf})
             idx += 1
             prog.progress(min(idx / max(total, 1), 1.0), text="Fotograma " + str(idx) + "/" + str(total))
-
         cap.release()
         os.unlink(tmp_path)
         prog.empty()
-
         if found:
             st.success(str(len(found)) + " placa(s) encontradas")
             for plate, conf in sorted(found.items(), key=lambda x: -x[1]):
