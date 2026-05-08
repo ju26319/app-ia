@@ -105,6 +105,68 @@ def upscale(img, min_w=480):
     img = ImageEnhance.Sharpness(img).enhance(2.0)
     return img
 
+def fix_plate(plate):
+    """
+    Post-procesamiento para corregir errores comunes de OCR en placas colombianas.
+    Formato: 3 letras + 3 digitos.
+    Posiciones 0-1-2 deben ser letras: corrige digitos que parecen letras.
+    Posiciones 3-4-5 deben ser digitos: corrige letras que parecen digitos.
+    """
+    if not plate or plate in ("ILEGIBLE", "ERROR", "ERROR_JSON", "SIN_MODELO"):
+        return plate
+
+    plate = plate.upper().strip()
+    # quitar espacios y guiones
+    plate = plate.replace(" ", "").replace("-", "")
+
+    if len(plate) != 6:
+        return plate
+
+    # Mapa de correcciones para posiciones de LETRAS (0,1,2)
+    # digito -> letra mas probable
+    digit_to_letter = {
+        "0": "O",
+        "1": "I",
+        "2": "Z",
+        "5": "S",
+        "6": "G",
+        "8": "B",
+    }
+
+    # Mapa de correcciones para posiciones de DIGITOS (3,4,5)
+    # letra -> digito mas probable
+    letter_to_digit = {
+        "O": "0",
+        "I": "1",
+        "Z": "2",
+        "S": "5",
+        "G": "6",
+        "B": "8",
+        "Q": "0",
+    }
+
+    # Correccion especial en posiciones de letra:
+    # O que deberia ser Q no se puede saber sin contexto visual
+    # pero si Claude dice O en pos 0-1-2, puede ser Q
+    # Usamos el contexto: si el caracter es O y esta en pos de letra,
+    # NO lo cambiamos porque O es letra valida.
+    # Lo que si corregimos: digitos en posiciones de letra
+
+    result = list(plate)
+
+    for i in range(3):  # posiciones 0,1,2 -> deben ser letras
+        c = result[i]
+        if c.isdigit():
+            result[i] = digit_to_letter.get(c, c)
+
+    for i in range(3, 6):  # posiciones 3,4,5 -> deben ser digitos
+        c = result[i]
+        if c.isalpha():
+            result[i] = letter_to_digit.get(c, c)
+
+    return "".join(result)
+
+
 def ocr_claude(client, plate_img):
     plate_img = upscale(plate_img)
     b64 = pil_to_b64(plate_img)
@@ -113,10 +175,12 @@ def ocr_claude(client, plate_img):
         "Analyze this plate image with extreme attention to detail. "
         "Colombian plates format: exactly 3 uppercase LETTERS then 3 DIGITS. "
         "CRITICAL: These character pairs are commonly confused - study carefully: "
-        "- Q vs O: Q has a small tail or diagonal stroke at bottom right, O is a clean oval "
-        "- Q vs J: Q is round with a tail, J has a hook at the bottom "
+        "- Q vs O: VERY IMPORTANT - Q has a small diagonal tail or extra stroke at the bottom right. "
+        "  O is a perfectly clean oval with absolutely no tail or extra mark. "
+        "  In Colombian plates Q appears frequently. If the oval character has ANY extra mark or tail, it is Q. "
+        "- Q vs J: Q is a full round circle with a tail at bottom right, J is narrow and tall with hook at bottom left "
         "- M vs H: M has two diagonal inner strokes forming a V shape, H has one horizontal bar "
-        "- M vs N: M has 4 legs (W shape inverted), N has 3 legs "
+        "- M vs N: THIS IS CRITICAL - M has 4 vertical strokes with two diagonals meeting in center forming a W/V shape inside, N has only 3 vertical strokes with one diagonal going from top-left to bottom-right. When unsure between M and N, zoom in mentally on the center: if you see a V shape pointing down, it is M. If you see only one diagonal line, it is N. "
         "- B vs 8: B has flat left side with two bumps right, 8 is symmetrical "
         "- A vs 4: A has a pointed top and crossbar, 4 has open top "
         "- O vs 0: first 3 positions are ALWAYS letters so O, last 3 ALWAYS digits so 0 "
@@ -153,6 +217,7 @@ def ocr_claude(client, plate_img):
             data = json.loads(raw)
             plate = data.get("plate", "ERROR")
             conf = float(data.get("confidence", 0.0))
+            plate = fix_plate(plate)
             return plate, conf, model_name
         except anthropic.NotFoundError:
             continue
