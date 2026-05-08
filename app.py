@@ -102,6 +102,311 @@ def ocr_claude(client, plate_img):
     plate_img = upscale(plate_img)
     b64 = pil_to_b64(plate_img)
     prompt = (
+        "You are a Colombian license plate reader. "
+        "Look at this license plate image carefully. "
+        "Colombian plates have exactly 3 letters followed by 3 digits (e.g. NTR136, CYW640). "
+        "Ignore any city name, department, or extra text printed on the plate. "
+        "Extract ONLY the 6 main characters: 3 uppercase letters + 3 digits. "
+        "Return ONLY a JSON object, no markdown: "
+        '{"plate":"NTR136","confidence":0.97} '
+        "confidence is 0.0 to 1.0. "
+        'If unreadable return: {"plate":"ILEGIBLE","confidence":0.2}'
+    )
+    for model_name in MODELS:
+        try:
+            response = client.messages.create(
+                model=model_name,
+                max_tokens=100,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": b64
+                            }
+                        },
+                        {"type": "text", "text": prompt}
+                    ]
+                }]
+            )
+            raw = response.content[0].text.strip()
+            raw = re.sub(r"```[a-z]*", "", raw).strip().strip("`")
+            data = json.loads(raw)
+            plate = data.get("plate", "ERROR")
+            conf = float(data.get("confidence", 0.0))
+            return plate, conf, model_name
+        except anthropic.NotFoundError:
+            continue
+        except json.JSONDecodeError:
+            return "ERROR_JSON", 0.0, model_name
+        except Exception as e:
+            return "ERROR", 0.0, str(e)
+    return "SIN_MODELO", 0.0, "ninguno"
+
+def draw_boxes(img_np, detections, texts):
+    out = img_np.copy()
+    for (_, (x1, y1, x2, y2), _), (text, lconf, _) in zip(detections, texts):
+        color = (124, 58, 237)
+        cv2.rectangle(out, (x1, y1), (x2, y2), color, 3)
+        label = text + "  " + str(round(lconf * 100)) + "%"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, 0.8, 2)
+        cv2.rectangle(out, (x1, y1 - th - 14), (x1 + tw + 12, y1), color, -1)
+        cv2.putText(out, label, (x1 + 6, y1 - 6),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 2)
+    return out
+
+with st.sidebar:
+    st.markdown("### Configuracion")
+    api_key_input = st.text_input("API Key de Anthropic", type="password", placeholder="sk-ant-api03-...")
+    if api_key_input:
+        os.environ["ANTHROPIC_API_KEY"] = api_key_input.strip()
+    st.markdown("---")
+    conf_threshold = st.slider("Confianza YOLO minima", 0.1, 0.9, 0.35, 0.05)
+    show_crops = st.checkbox("Mostrar recortes", value=True)
+    st.markdown("---")
+    st.markdown("**Historial**")
+    if st.session_state.history:
+        for e in reversed(st.session_state.history[-10:]):
+            pct = str(round(e["conf"] * 100))
+            st.markdown(
+                '<div class="hist-item"><span class="hist-plate">'
+                + e["plate"]
+                + '</span><span class="hist-conf">'
+                + pct
+                + "%</span></div>",
+                unsafe_allow_html=True,
+            )
+        if st.button("Limpiar"):
+            st.session_state.history = []
+            st.rerun()
+    else:
+        st.caption("Sin placas aun")
+
+st.markdown(
+    '<div class="hero"><h1>Detector de Placas</h1>'
+    "<p>YOLO v8 + Claude Vision &middot; Talento Tech 2026</p></div>",
+    unsafe_allow_html=True,
+)
+
+with st.spinner("Cargando modelo YOLO..."):
+    yolo_model = load_yolo()
+
+api_key = get_api_key()
+claude_client = make_client(api_key)
+
+if not api_key:
+    st.warning("Ingresa tu API Key de Anthropic en el panel izquierdo.", icon="🔑")
+else:
+    st.success("API Key detectada correctamente.", icon="✅")
+
+tab_img, tab_cam, tab_video = st.tabs(["Imagen", "Camara", "Video"])
+
+
+def process_image(img_pil):
+    img_np = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+
+    with st.spinner("Detectando placas con YOLO..."):
+        t0 = time.time()
+        detections = detect_plates(yolo_model, img_np, conf_thr=conf_threshold)
+        yolo_ms = int((time.time() - t0) * 1000)
+
+    if not detections:
+        st.error("No se detectaron placas. Baja la confianza minima o usa otra foto.")
+        return
+
+    texts = []
+    llm_ms = 0
+    model_used = "N/A"
+
+    if claude_client:
+        with st.spinner("Extrayendo texto con Claude Vision..."):
+            t1 = time.time()
+            for crop_pil, _, _ in detections:
+                text, lconf, model_used = ocr_claude(claude_client, crop_pil)
+                texts.append((text, lconf, model_used))
+                st.session_state.history.append({"plate": text, "conf": lconf})
+            llm_ms = int((time.time() - t1) * 1000)
+    else:
+        texts = [("OCR desactivado", 0.0, "N/A")] * len(detections)
+
+    annotated = draw_boxes(img_np, detections, texts)
+    annotated_pil = Image.fromarray(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB))
+
+    col_img, col_res = st.columns([1.3, 1])
+    with col_img:
+        st.image(annotated_pil, use_column_width=True, caption="Resultado")
+
+    with col_res:
+        avg = int(np.mean([c for _, c, _ in texts]) * 100) if texts else 0
+        st.markdown(
+            '<div class="metrics">'
+            '<div class="met"><div class="met-val">' + str(len(detections)) + '</div><div class="met-lbl">Placas</div></div>'
+            '<div class="met"><div class="met-val">' + str(avg) + '%</div><div class="met-lbl">Confianza</div></div>'
+            '<div class="met"><div class="met-val">' + str(yolo_ms) + 'ms</div><div class="met-lbl">YOLO</div></div>'
+            '<div class="met"><div class="met-val">' + str(llm_ms) + 'ms</div><div class="met-lbl">Claude</div></div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Modelo: " + model_used)
+
+        for i, ((crop_pil, _, yconf), (text, lconf, _)) in enumerate(zip(detections, texts)):
+            badge = "badge-ok" if lconf >= 0.85 else "badge-low"
+            st.markdown(
+                '<div class="plate-box">'
+                '<div style="color:rgb(148,163,184);font-size:0.75rem;margin-bottom:0.3rem">PLACA ' + str(i + 1) + '</div>'
+                '<div class="plate-text">' + text + '</div><br>'
+                '<span class="' + badge + '">Claude ' + str(round(lconf * 100, 1)) + '%  YOLO ' + str(round(yconf * 100, 1)) + '%</span>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            if show_crops:
+                st.image(crop_pil, caption="Recorte " + str(i + 1), width=240)
+
+
+with tab_img:
+    uploaded = st.file_uploader(
+        "Sube una imagen del vehiculo",
+        type=["jpg", "jpeg", "png", "webp", "bmp"],
+        label_visibility="collapsed",
+    )
+    if uploaded:
+        process_image(Image.open(uploaded).convert("RGB"))
+
+with tab_cam:
+    cam = st.camera_input("Toma una foto")
+    if cam:
+        process_image(Image.open(cam).convert("RGB"))
+
+with tab_video:
+    vfile = st.file_uploader(
+        "Sube un video",
+        type=["mp4", "avi", "mov", "mkv"],
+        label_visibility="collapsed",
+        key="vid",
+    )
+    fstep = st.slider("Analizar cada N fotogramas", 10, 60, 30)
+
+    if vfile and st.button("Analizar video"):
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            tmp.write(vfile.read())
+            tmp_path = tmp.name
+
+        cap = cv2.VideoCapture(tmp_path)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        found = {}
+        prog = st.progress(0, text="Analizando...")
+        idx = 0
+
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if idx % fstep == 0:
+                dets = detect_plates(yolo_model, frame, conf_thr=conf_threshold)
+                if dets and claude_client:
+                    for crop_pil, _, _ in dets:
+                        text, lconf, _ = ocr_claude(claude_client, crop_pil)
+                        if text not in ("ILEGIBLE", "ERROR", "SIN_MODELO", "ERROR_JSON") and lconf > 0.6:
+                            found[text] = max(found.get(text, 0), lconf)
+                            st.session_state.history.append({"plate": text, "conf": lconf})
+            idx += 1
+            prog.progress(
+                min(idx / max(total, 1), 1.0),
+                text="Fotograma " + str(idx) + "/" + str(total),
+            )
+
+        cap.release()
+        os.unlink(tmp_path)
+        prog.empty()
+
+        if found:
+            st.success(str(len(found)) + " placa(s) encontradas")
+            for plate, conf in sorted(found.items(), key=lambda x: -x[1]):
+                badge = "badge-ok" if conf >= 0.85 else "badge-low"
+                st.markdown(
+                    '<div class="plate-box">'
+                    '<div class="plate-text">' + plate + '</div><br>'
+                    '<span class="' + badge + '">Confianza: ' + str(round(conf * 100, 1)) + '%</span>'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.warning("No se detectaron placas legibles en el video.")
+
+st.markdown(
+    '<div class="footer">Talento Tech &middot; Bootcamp IA Innovador 2026 &middot; YOLO v8 + Claude Vision</div>',
+    unsafe_allow_html=True,
+).hist-plate { color: rgb(226,232,240); }
+.hist-conf { color: rgb(100,116,139); }
+.footer { text-align: center; color: rgb(51,65,85); font-size: 0.75rem; margin-top: 3rem; padding-top: 1rem; border-top: 1px solid rgb(26,26,46); }
+</style>
+""", unsafe_allow_html=True)
+
+if "history" not in st.session_state:
+    st.session_state.history = []
+
+MODELS = [
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-4-5-20250929",
+    "claude-sonnet-4-6",
+]
+
+@st.cache_resource
+def load_yolo():
+    return YOLO("best.pt")
+
+def get_api_key():
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        key = st.secrets["ANTHROPIC_API_KEY"].strip()
+        if key:
+            return key
+    except Exception:
+        pass
+    return ""
+
+def make_client(api_key):
+    if not api_key:
+        return None
+    return anthropic.Anthropic(api_key=api_key)
+
+def pil_to_b64(img):
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=95)
+    return base64.standard_b64encode(buf.getvalue()).decode()
+
+def detect_plates(model, img_np, conf_thr=0.35):
+    results = model(img_np, conf=conf_thr, verbose=False)
+    plates = []
+    for r in results:
+        for box in r.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+            pad = 6
+            x1 = max(0, x1 - pad)
+            y1 = max(0, y1 - pad)
+            x2 = min(img_np.shape[1], x2 + pad)
+            y2 = min(img_np.shape[0], y2 + pad)
+            crop = img_np[y1:y2, x1:x2]
+            crop_pil = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+            plates.append((crop_pil, (x1, y1, x2, y2), float(box.conf[0])))
+    return sorted(plates, key=lambda x: -x[2])
+
+def upscale(img, min_w=320):
+    w, h = img.size
+    if w < min_w:
+        s = min_w / w
+        img = img.resize((int(w * s), int(h * s)), Image.LANCZOS)
+    return img
+
+def ocr_claude(client, plate_img):
+    plate_img = upscale(plate_img)
+    b64 = pil_to_b64(plate_img)
+    prompt = (
         "Look at this license plate image. "
         "Return ONLY a JSON object, no markdown, no explanation: "
         '{"plate":"ABC123","confidence":0.97} '
